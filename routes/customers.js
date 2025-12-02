@@ -299,12 +299,10 @@ router.post('/settle-due', async (req, res) => {
       return res.status(400).json({ msg: 'Invalid payment amount.' });
     }
     
-    // Use a small tolerance for floating point comparison
     if (paymentAmount > sale.borrowing + 0.001) {
       return res.status(400).json({ msg: `Payment amount cannot be greater than the due amount of ${sale.borrowing.toFixed(2)}.` });
     }
 
-    // Atomically update the sale document
     const updatedSale = await Sale.findByIdAndUpdate(
       saleId,
       {
