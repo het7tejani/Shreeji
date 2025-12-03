@@ -5,10 +5,12 @@ const mongoose = require('mongoose');
 require('../models/Customer');
 require('../models/Sale');
 require('../models/PaymentLog');
+require('../models/Spice'); // Import Spice model
 
 const Customer = mongoose.model('customer');
 const Sale = mongoose.model('sale');
 const PaymentLog = mongoose.model('paymentLog');
+const Spice = mongoose.model('spice'); // Define Spice model
 
 
 // @route   GET api/customers
@@ -42,6 +44,96 @@ router.get('/lookup/:mobileNumber', async (req, res) => {
   }
 });
 
+// @route   POST api/customers/add
+// @desc    Manually add a new customer
+// @access  Public
+router.post('/add', async (req, res) => {
+  const { name, mobileNumber, address, notes, category } = req.body;
+
+  if (!name || !mobileNumber) {
+    return res.status(400).json({ msg: 'Name and Mobile Number are required.' });
+  }
+
+  if (mobileNumber.length !== 10) {
+    return res.status(400).json({ msg: 'Mobile number must be 10 digits.' });
+  }
+
+  try {
+    let customer = await Customer.findOne({ mobileNumber });
+    if (customer) {
+      return res.status(400).json({ msg: 'Customer with this mobile number already exists.' });
+    }
+
+    const customerData = {
+      name,
+      mobileNumber,
+      address,
+      notes
+    };
+
+    if (category) {
+        // Store category in tags
+        customerData.tags = [category];
+    }
+
+    customer = new Customer(customerData);
+
+    await customer.save();
+    res.json({ msg: 'Customer added successfully', customer });
+  } catch (err) {
+    console.error(err.message);
+    // Return JSON error instead of text for better frontend handling
+    res.status(500).json({ msg: 'Server Error: ' + err.message });
+  }
+});
+
+// @route   DELETE api/customers/:id
+// @desc    Delete a customer AND their sales/payment history AND restore stock
+// @access  Public
+router.delete('/:id', async (req, res) => {
+  try {
+    const customerId = req.params.id;
+
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ msg: 'Customer not found' });
+    }
+
+    // 1. Find all Sales associated with this customer
+    const sales = await Sale.find({ customer: customerId });
+
+    // 2. Revert stock for each sale (Add sold items back to inventory)
+    for (const sale of sales) {
+        if (sale.items && Array.isArray(sale.items)) {
+            for (const item of sale.items) {
+                // Only restore stock if the sale wasn't cancelled (though cancelled sales usually don't deduct stock, 
+                // or are handled separately, assuming standard sales here deduct stock)
+                if (!sale.cancelled) {
+                    await Spice.updateOne(
+                        { id: item.spiceId },
+                        { $inc: { stock: item.quantityKg } }
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. Delete all Sales associated with this customer
+    await Sale.deleteMany({ customer: customerId });
+
+    // 4. Delete all Payment Logs associated with this customer
+    await PaymentLog.deleteMany({ customer: customerId });
+
+    // 5. Delete the Customer record
+    await Customer.findByIdAndDelete(customerId);
+
+    res.json({ msg: 'Customer deleted, sales history removed, and stock restored successfully' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ msg: 'Server Error: ' + err.message });
+  }
+});
+
 // @route   GET api/customers/sales/:mobileNumber
 // @desc    Get sales history for a customer by mobile number
 // @access  Public
@@ -67,15 +159,19 @@ router.get('/sales/:mobileNumber', async (req, res) => {
 router.get('/dues', async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
-    const typeFilter = req.query.type; // 'Retail', 'WholeChili', or 'Wholesale'
+    const typeFilter = req.query.type; 
     
-    // Using a more robust aggregation pipeline instead of populate
+    const matchCondition = { 
+        borrowing: { $gt: 0 },
+        cancelled: { $ne: true } 
+    };
+
     const pipeline = [
-      { $match: { borrowing: { $gt: 0 } } },
+      { $match: matchCondition },
       { $sort: { date: -1 } },
       {
         $lookup: {
-          from: 'customers', // The actual collection name for the 'customer' model
+          from: 'customers',
           localField: 'customer',
           foreignField: '_id',
           as: 'customerInfo'
@@ -84,29 +180,24 @@ router.get('/dues', async (req, res) => {
       {
         $unwind: {
           path: '$customerInfo',
-          preserveNullAndEmptyArrays: true // Keep sale even if customer is not found
+          preserveNullAndEmptyArrays: true 
         }
       },
       {
         $project: {
-          'customerInfo.createdAt': 0, // Exclude fields if necessary
+          'customerInfo.createdAt': 0, 
           'customerInfo.__v': 0,
         }
       },
-      // Rename 'customerInfo' to 'customer' to match frontend expectation
       { $addFields: { customer: '$customerInfo' } },
       { $project: { customerInfo: 0 } }
     ];
 
-    // If filtering by type (e.g., only Retail), apply to SALES, not customer tags
     if (typeFilter) {
       const matchStage = pipeline[0].$match;
       if (typeFilter === 'Retail') {
-          // For Retail, include items explicitly marked Retail OR legacy items with no type
-          // BUT exclude 'Retail - Whole' which is now its own category
           matchStage.type = { $nin: ['Wholesale', 'Retail - Whole'] };
       } else if (typeFilter === 'WholeChili') {
-          // Specific filter for Whole Chili
           matchStage.type = 'Retail - Whole';
       } else {
           matchStage.type = typeFilter;
@@ -114,7 +205,6 @@ router.get('/dues', async (req, res) => {
     }
 
     const salesWithDues = await Sale.aggregate(pipeline);
-
     res.json(salesWithDues);
   } catch (err) {
     console.error(err.message);
@@ -130,9 +220,11 @@ router.get('/wholesale/summary', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     
     const summary = await Sale.aggregate([
-      // 1. Only sales with borrowing AND Type='Wholesale' or 'Retail - Whole'
-      { $match: { borrowing: { $gt: 0 }, type: { $in: ['Wholesale', 'Retail - Whole'] } } },
-      // 2. Lookup customer
+      { $match: { 
+          borrowing: { $gt: 0 }, 
+          type: { $in: ['Wholesale', 'Retail - Whole'] },
+          cancelled: { $ne: true }
+      }},
       {
         $lookup: {
           from: 'customers',
@@ -142,7 +234,6 @@ router.get('/wholesale/summary', async (req, res) => {
         }
       },
       { $unwind: '$cust' },
-      // 3. Group by customer and sum borrowing
       {
         $group: {
           _id: '$cust._id',
@@ -150,7 +241,7 @@ router.get('/wholesale/summary', async (req, res) => {
           mobileNumber: { $first: '$cust.mobileNumber' },
           totalDue: { $sum: '$borrowing' },
           salesCount: { $sum: 1 },
-          types: { $addToSet: '$type' } // Collect unique types for this customer
+          types: { $addToSet: '$type' }
         }
       },
       { $sort: { customerName: 1 } }
@@ -164,33 +255,33 @@ router.get('/wholesale/summary', async (req, res) => {
 });
 
 // @route   GET api/customers/ledger/:customerId
-// @desc    Get detailed ledger (Sales + Payments) for a customer, filtered by type
+// @desc    Get detailed ledger (Sales + Payments) for a customer
 // @access  Public
 router.get('/ledger/:customerId', async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
     const { customerId } = req.params;
-    const { type } = req.query; // 'Retail' or 'Wholesale'
+    const { type } = req.query; 
 
     const customer = await Customer.findById(customerId);
     if (!customer) return res.status(404).json({ msg: 'Customer not found' });
 
-    // Filter Sales
-    const saleQuery = { customer: customerId };
+    const saleQuery = { 
+        customer: customerId,
+        cancelled: { $ne: true }
+    };
     if (type) {
         if (type === 'Retail') {
-            saleQuery.type = { $nin: ['Wholesale', 'Retail - Whole'] }; // Exclude Wholesale AND Whole Chili
+            saleQuery.type = { $nin: ['Wholesale', 'Retail - Whole'] };
         } else {
             saleQuery.type = type;
         }
     }
     const sales = await Sale.find(saleQuery).lean();
 
-    // Filter Payments
     const paymentQuery = { customer: customerId };
     if (type) {
         if (type === 'Retail') {
-            // Include payments explicitly Retail OR payments with no type (legacy)
             paymentQuery.type = { $nin: ['Wholesale', 'Retail - Whole'] };
         } else {
             paymentQuery.type = type;
@@ -198,10 +289,7 @@ router.get('/ledger/:customerId', async (req, res) => {
     }
     const payments = await PaymentLog.find(paymentQuery).lean();
 
-    // Calculate current total due based on filtered lists
     const salesTotal = sales.reduce((acc, sale) => acc + (sale.borrowing || 0), 0);
-    // Note: 'borrowing' in Sale already accounts for initial payment.
-    
     const totalDue = salesTotal;
 
     res.json({
@@ -217,7 +305,7 @@ router.get('/ledger/:customerId', async (req, res) => {
 });
 
 // @route   POST api/customers/wholesale/pay
-// @desc    Record a lump sum payment for a wholesaler/whole chili and distribute it across old sales
+// @desc    Record a lump sum payment
 // @access  Public
 router.post('/wholesale/pay', async (req, res) => {
   const { customerId, amount } = req.body;
@@ -227,23 +315,20 @@ router.post('/wholesale/pay', async (req, res) => {
   }
 
   try {
-    // 1. Get all unpaid WHOLESALE or WHOLE CHILI sales for this customer, oldest first
     const sales = await Sale.find({ 
       customer: customerId, 
       borrowing: { $gt: 0 },
-      type: { $in: ['Wholesale', 'Retail - Whole'] }
+      type: { $in: ['Wholesale', 'Retail - Whole'] },
+      cancelled: { $ne: true }
     }).sort({ date: 1 });
 
     let remainingPayment = Number(amount);
     let paidSalesCount = 0;
 
-    // 2. Distribute payment
     for (const sale of sales) {
       if (remainingPayment <= 0) break;
 
-      // How much can we pay off this sale?
       let payOffAmount = 0;
-      
       if (remainingPayment >= sale.borrowing) {
         payOffAmount = sale.borrowing;
       } else {
@@ -258,7 +343,6 @@ router.post('/wholesale/pay', async (req, res) => {
       paidSalesCount++;
     }
 
-    // 3. Log the payment as Wholesale (generic type for this dashboard)
     const log = new PaymentLog({
       customer: customerId,
       amount: Number(amount),
@@ -279,7 +363,7 @@ router.post('/wholesale/pay', async (req, res) => {
 });
 
 // @route   POST api/customers/settle-due
-// @desc    Settle a due for a specific sale (Retail)
+// @desc    Settle a due for a specific sale
 // @access  Public
 router.post('/settle-due', async (req, res) => {
   const { saleId, amount } = req.body;
@@ -292,6 +376,9 @@ router.post('/settle-due', async (req, res) => {
     const sale = await Sale.findById(saleId);
     if (!sale) {
       return res.status(404).json({ msg: 'Sale not found.' });
+    }
+    if (sale.cancelled) {
+        return res.status(400).json({ msg: 'Cannot settle due for a cancelled sale.' });
     }
 
     const paymentAmount = parseFloat(amount);
@@ -311,15 +398,14 @@ router.post('/settle-due', async (req, res) => {
           amountToPay: paymentAmount
         }
       },
-      { new: true } // Return the updated document
+      { new: true }
     );
 
-    // Log this as a Retail payment
     const log = new PaymentLog({
         customer: sale.customer,
         amount: paymentAmount,
         note: `Retail Settle Due for Sale ID: ${saleId}`,
-        type: sale.type || 'Retail' // Keep original type
+        type: sale.type || 'Retail'
     });
     await log.save();
 
@@ -334,7 +420,7 @@ router.post('/settle-due', async (req, res) => {
 });
 
 // @route   PUT api/customers/:id
-// @desc    Update customer details (notes, credit limit)
+// @desc    Update customer details
 // @access  Public
 router.put('/:id', async (req, res) => {
   const { notes, creditLimit } = req.body;

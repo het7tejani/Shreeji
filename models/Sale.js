@@ -58,6 +58,11 @@ const SaleSchema = new mongoose.Schema({
     default: 'Retail',
     index: true
   },
+  cancelled: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
   date: { 
     type: Date, 
     default: Date.now,

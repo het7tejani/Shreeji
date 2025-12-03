@@ -7,7 +7,7 @@ require('../models/Spice');
 require('../models/Purchase');
 require('../models/Customer');
 require('../models/Sale');
-require('../models/PaymentLog'); // Ensure this model is loaded
+require('../models/PaymentLog'); 
 
 const Spice = mongoose.model('spice');
 const Purchase = mongoose.model('purchase');
@@ -39,7 +39,6 @@ router.post('/add', async (req, res) => {
   }
 
   try {
-    // Find the highest existing ID to auto-increment
     const lastSpice = await Spice.findOne().sort({ id: -1 });
     const newId = lastSpice && !isNaN(lastSpice.id) ? lastSpice.id + 1 : 1;
 
@@ -51,8 +50,6 @@ router.post('/add', async (req, res) => {
     });
 
     await newSpice.save();
-    
-    // Return updated list
     const spices = await Spice.find().sort({ id: 1 });
     res.json(spices);
   } catch (err) {
@@ -70,8 +67,6 @@ router.delete('/:id', async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ msg: 'Spice not found' });
     }
-    
-    // Return updated list
     const spices = await Spice.find().sort({ id: 1 });
     res.json(spices);
   } catch (err) {
@@ -122,7 +117,6 @@ router.post('/purchase', async (req, res) => {
   }
 
   try {
-    // 1. Save the purchase record
     const newPurchase = new Purchase({
       vendorName,
       vendorMobile,
@@ -131,7 +125,6 @@ router.post('/purchase', async (req, res) => {
     });
     await newPurchase.save();
 
-    // 2. Atomically update stock levels for each item
     for (const item of items) {
        await Spice.updateOne(
         { id: item.spiceId },
@@ -157,7 +150,7 @@ router.post('/sell', async (req, res) => {
   }
 
   try {
-    // First, verify stock for all items
+    // Verify stock
     for (const item of items) {
       const spice = await Spice.findOne({ id: item.spiceId }).lean();
       if (!spice || spice.stock < item.quantityKg) {
@@ -167,24 +160,29 @@ router.post('/sell', async (req, res) => {
       }
     }
 
-    // Find or create customer using a single atomic operation.
-    const updateOps = {
-      $set: { address: customerInfo.address },
-      $setOnInsert: {
-        name: customerInfo.name,
-        mobileNumber: customerInfo.mobileNumber,
-      }
-    };
+    // Manage Customer Logic (Explicit Check)
+    let customer = await Customer.findOne({ mobileNumber: customerInfo.mobileNumber });
 
-    if (saleSource) {
-      updateOps.$addToSet = { tags: saleSource };
+    if (customer) {
+        // Update existing customer details
+        if (customerInfo.address) {
+            customer.address = customerInfo.address;
+        }
+        // Add tag if not present
+        if (saleSource && !customer.tags.includes(saleSource)) {
+            customer.tags.push(saleSource);
+        }
+        await customer.save();
+    } else {
+        // Create NEW customer if not found (e.g., deleted or new)
+        customer = new Customer({
+            name: customerInfo.name,
+            mobileNumber: customerInfo.mobileNumber,
+            address: customerInfo.address,
+            tags: saleSource ? [saleSource] : []
+        });
+        await customer.save();
     }
-
-    const customer = await Customer.findOneAndUpdate(
-      { mobileNumber: customerInfo.mobileNumber },
-      updateOps,
-      { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true }
-    );
 
     // Get next bill number
     const lastSale = await Sale.findOne({}, { billNumber: 1 }).sort({ billNumber: -1 }).limit(1);
@@ -193,8 +191,11 @@ router.post('/sell', async (req, res) => {
         nextBillNum = lastSale.billNumber + 1;
     }
 
-    // Create a new Sale document
+    // Create a unique Custom ID for reliable future deletion
+    const uniqueCustomId = `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
     const newSale = new Sale({
+      customId: uniqueCustomId, 
       customer: customer._id,
       billNumber: nextBillNum,
       items,
@@ -204,17 +205,17 @@ router.post('/sell', async (req, res) => {
       labor: labor || 0,
       commission: commission || 0,
       discount: discount || 0,
-      type: saleSource || 'Retail' // Explicitly save sale type (Retail/Wholesale)
+      type: saleSource || 'Retail'
     });
     await newSale.save();
 
-    // If there is an initial payment (amountToPay > 0), log it as a PaymentLog as well
     if (amountToPay > 0) {
         const log = new PaymentLog({
             customer: customer._id,
+            saleId: newSale._id,
             amount: amountToPay,
             note: 'Initial Payment (At Sale)',
-            type: saleSource || 'Retail' // Link payment to the sale type
+            type: saleSource || 'Retail'
         });
         await log.save();
     }
@@ -226,11 +227,10 @@ router.post('/sell', async (req, res) => {
       );
     }
 
-    res.json({ msg: 'Sale recorded and stock updated successfully', sale: newSale });
+    res.json({ msg: 'Sale recorded successfully', sale: newSale });
 
   } catch (err) {
     console.error('Server Error:', err.message);
-    // Return actual error message for debugging
     res.status(500).json({ msg: err.message });
   }
 });

@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 
 const PurchaseItemSchema = new mongoose.Schema({
@@ -16,10 +17,17 @@ const PurchaseSchema = new mongoose.Schema({
   vendorMobile: { 
     type: String 
   },
+  vendorAddress: {
+    type: String
+  },
   items: [PurchaseItemSchema],
   grandTotal: {
     type: Number,
     required: true
+  },
+  cancelled: {
+    type: Boolean,
+    default: false
   },
   date: {
     type: Date,

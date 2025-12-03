@@ -1,3 +1,4 @@
+
 const mongoose = require('mongoose');
 
 const PaymentLogSchema = new mongoose.Schema({
@@ -5,6 +6,10 @@ const PaymentLogSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'customer',
     required: true
+  },
+  saleId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'sale'
   },
   amount: {
     type: Number,
