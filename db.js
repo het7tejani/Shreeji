@@ -8,6 +8,9 @@ const connectDB = async () => {
         throw new Error("MONGO_URI is not defined in environment variables.");
     }
 
+    // Suppress Mongoose 7 deprecation warning
+    mongoose.set('strictQuery', false);
+
     await mongoose.connect(db, {
       useNewUrlParser: true,
       useUnifiedTopology: true,

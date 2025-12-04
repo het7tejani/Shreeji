@@ -19,7 +19,6 @@ app.use(cors({
 
 // Enable Pre-flight requests for all routes (Fixes Vercel CORS issues)
 // Use regex /.*/ instead of string '*' to prevent "Missing parameter name" errors
-// with newer versions of path-to-regexp that might be present in the environment.
 app.options(/.*/, cors());
 
 app.use(express.json({ extended: false }));
@@ -34,6 +33,19 @@ app.use('/api/customers', require('./routes/customers'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/auth', require('./routes/auth'));
 
+// --- GLOBAL ERROR HANDLERS ---
+// These prevent HTML responses (like default 404s) from crashing the React JSON parser
+
+// 404 Handler for API routes
+app.use((req, res, next) => {
+  res.status(404).json({ msg: `API Route Not Found: ${req.originalUrl}` });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error("Server Error:", err.stack);
+  res.status(500).json({ msg: "Internal Server Error" });
+});
 
 const PORT = process.env.PORT || 5001;
 
