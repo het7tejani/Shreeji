@@ -10,7 +10,18 @@ const User = mongoose.model('user');
 const app = express();
 
 // Init Middleware
-app.use(cors());
+// Explicitly allow all origins to prevent CORS issues between Vercel and Render
+app.use(cors({
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Enable Pre-flight requests for all routes (Fixes Vercel CORS issues)
+// Use regex /.*/ instead of string '*' to prevent "Missing parameter name" errors
+// with newer versions of path-to-regexp that might be present in the environment.
+app.options(/.*/, cors());
+
 app.use(express.json({ extended: false }));
 
 app.get('/', (req, res) => res.send('API Running'));
