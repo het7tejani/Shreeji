@@ -5,6 +5,7 @@ const connectDB = require('./db');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
+const path = require('path'); // Added for file path handling
 require('./models/User'); // Ensure User model is registered
 const User = mongoose.model('user');
 
@@ -45,12 +46,24 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
+// --- FRONTEND SERVING (SPA Support for Render) ---
+// Serve static files from the React build directory
+// Make sure your Render build command builds the frontend into 'live/dashboad/build'
+app.use(express.static(path.join(__dirname, '../dashboad/build')));
+
 // --- GLOBAL ERROR HANDLERS ---
 // These prevent HTML responses (like default 404s) from crashing the React JSON parser
 
-// 404 Handler for API routes
-app.use((req, res, next) => {
+// 404 Handler for API routes ONLY
+// This allows non-API routes (like /settings) to fall through to the SPA catch-all
+app.use('/api/*', (req, res, next) => {
   res.status(404).json({ msg: `API Route Not Found: ${req.originalUrl}` });
+});
+
+// The "Catch All" handler: for any request that doesn't match an API route
+// Sends the React index.html to allow client-side routing (fixes refresh 404s)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dashboad/build', 'index.html'));
 });
 
 // Global Error Handler
