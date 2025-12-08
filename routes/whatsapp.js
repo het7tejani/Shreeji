@@ -19,7 +19,7 @@ router.get('/status', (req, res) => {
 router.post('/logout', async (req, res) => {
     try {
         await whatsappClient.logout();
-        res.json({ msg: 'Logged out successfully. Reloading client...' });
+        res.json({ msg: 'Logged out successfully.' });
     } catch (err) {
         console.error(err);
         res.status(500).json({ msg: 'Error logging out' });
@@ -40,11 +40,13 @@ router.post('/send', async (req, res) => {
     }
 
     const statusData = whatsappClient.getStatus();
-    if (statusData.status !== 'READY') {
+    
+    // Allow 'CONNECTING' state as well, since sync can happen in background
+    if (statusData.status !== 'READY' && statusData.status !== 'CONNECTING') {
         return res.status(503).json({ msg: 'WhatsApp client is not ready. Please scan QR code in settings.' });
     }
 
-    // Respond immediately to the frontend, continue processing in background
+    // Respond immediately to the frontend
     res.json({ msg: `Started sending to ${numbers.length} contacts.` });
 
     console.log(`[WhatsApp] Starting bulk send to ${numbers.length} numbers.`);

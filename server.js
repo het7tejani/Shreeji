@@ -5,16 +5,12 @@ const connectDB = require('./db');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
-const path = require('path'); // Added for file path handling
-require('./models/User'); // Ensure User model is registered
+const path = require('path');
+require('./models/User');
 const User = mongoose.model('user');
 
-// Initialize WhatsApp Client (It starts itself)
-try {
-    require('./whatsappClient');
-} catch (e) {
-    console.error("Failed to load WhatsApp Client:", e.message);
-}
+// Import but don't initialize yet
+const whatsappClient = require('./whatsappClient');
 
 const app = express();
 
@@ -25,23 +21,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Enable Pre-flight requests for all routes
 app.options(/.*/, cors());
 
-// Increase payload limit for images
 app.use(express.json({ limit: '50mb', extended: true }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // --- STATIC FILE SERVING ---
-// Define the path to the React Build directory
-// server.js is in /live/backend/, so we go up one level (..) then into dashboad/build
 const buildPath = path.join(__dirname, '../dashboad/build');
-
-// Serve static files (css, js, images) from the build directory
 app.use(express.static(buildPath));
 
 app.get('/', (req, res) => {
-    // If the React app is built, serve it. Otherwise show API status.
     res.sendFile(path.join(buildPath, 'index.html'), (err) => {
         if (err) res.send('API Running (Frontend not found at ' + buildPath + ')');
     });
@@ -56,18 +45,11 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
-// --- GLOBAL ERROR HANDLERS ---
-
-// 1. API 404 Handler
-// This ensures that requests starting with /api/ that don't match a route return JSON 404
-// instead of falling through to the React App (which would try to parse JSON and crash)
+// --- ERROR HANDLERS ---
 app.use('/api/*', (req, res) => {
   res.status(404).json({ msg: `API Route Not Found: ${req.originalUrl}` });
 });
 
-// 2. React SPA Catch-All Handler (The Fix for "Refresh 404")
-// Any request that is NOT an API request and NOT a static file will be sent index.html.
-// This allows React Router to handle the URL (e.g., /settings, /stock) on the client side.
 app.get('*', (req, res) => {
   res.sendFile(path.join(buildPath, 'index.html'), (err) => {
     if (err) {
@@ -77,7 +59,6 @@ app.get('*', (req, res) => {
   });
 });
 
-// 3. Global Error Middleware
 app.use((err, req, res, next) => {
   console.error("Server Error:", err.stack);
   if (res.headersSent) {
@@ -88,21 +69,16 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5001;
 
-// Seed Admin User Logic
+// Seed Admin User
 const seedAdminUser = async () => {
   const username = process.env.ADMIN_USERNAME;
   const password = process.env.ADMIN_PASSWORD;
 
-  if (!username || !password) {
-    console.log('No ADMIN_USERNAME or ADMIN_PASSWORD in .env, skipping seed.');
-    return;
-  }
+  if (!username || !password) return;
 
   try {
     const userExists = await User.findOne({ username });
-    if (userExists) {
-      return;
-    }
+    if (userExists) return;
 
     const SALT_LENGTH = 16;
     const KEY_LENGTH = 64;
@@ -128,7 +104,7 @@ const seedAdminUser = async () => {
     });
 
     await newUser.save();
-    console.log(`Admin user '${username}' created successfully from .env`);
+    console.log(`Admin user '${username}' created.`);
 
   } catch (err) {
     console.error('Error seeding admin user:', err.message);
@@ -139,6 +115,10 @@ const startServer = async () => {
   try {
     await connectDB();
     await seedAdminUser();
+    
+    // Start WhatsApp Client AFTER Database is connected
+    whatsappClient.initClient(mongoose);
+
     app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
   } catch (error) {
     console.error('Failed to start server:', error);

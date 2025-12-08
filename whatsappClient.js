@@ -1,64 +1,58 @@
 
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const { Client, RemoteAuth, MessageMedia } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
 const qrcode = require('qrcode');
+const mongoose = require('mongoose');
 
 let client;
 let qrCodeDataUrl = null;
 let status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTING, READY, ERROR
 
-// Define function to initialize client
-const initializeClient = () => {
-    console.log("Initializing WhatsApp Client...");
+// Initialize function that takes the mongoose connection
+const initClient = (mongooseConnection) => {
+    if (client) return; // Prevent multiple initializations
+
+    console.log("Initializing WhatsApp Client with RemoteAuth...");
     
-    // Create new client instance with aggressive memory optimizations for Render Free Tier
+    const store = new MongoStore({ mongoose: mongoose });
+
     client = new Client({
-        authStrategy: new LocalAuth(),
+        authStrategy: new RemoteAuth({
+            store: store,
+            backupSyncIntervalMs: 300000 // Backup session every 5 minutes
+        }),
         // Increase timeouts for slow servers
-        authTimeoutMs: 60000, // Wait 60s for auth
+        authTimeoutMs: 60000, 
         qrMaxRetries: 5,
         takeoverOnConflict: true,
         puppeteer: {
             headless: true,
-            // These arguments strip Chrome down to the bare minimum to save RAM
+            // Aggressive memory saving args
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Critical for Docker/Render
+                '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--single-process', // Saves memory
+                '--single-process',
                 '--disable-gpu',
                 '--disable-extensions',
-                '--disable-component-extensions-with-background-pages',
                 '--disable-default-apps',
                 '--mute-audio',
                 '--no-default-browser-check',
-                '--autoplay-policy=user-gesture-required',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-breakpad',
-                '--disable-client-side-phishing-detection',
                 '--disable-component-update',
-                '--disable-domain-reliability',
                 '--disable-features=AudioServiceOutOfProcess',
                 '--disable-hang-monitor',
                 '--disable-ipc-flooding-protection',
                 '--disable-notifications',
-                '--disable-offer-store-unmasked-wallet-cards',
-                '--disable-popup-blocking',
                 '--disable-print-preview',
-                '--disable-prompt-on-repost',
                 '--disable-renderer-backgrounding',
                 '--disable-speech-api',
-                '--disable-sync',
-                '--hide-scrollbars',
-                '--ignore-gpu-blacklist',
-                '--metrics-recording-only',
-                '--no-pings',
-                '--password-store=basic',
-                '--use-gl=swiftshader',
-                '--use-mock-keychain',
+                '--disable-sync'
             ]
         }
     });
@@ -73,10 +67,14 @@ const initializeClient = () => {
         }
     });
 
+    client.on('remote_session_saved', () => {
+        console.log('WhatsApp Session saved to Database!');
+    });
+
     client.on('authenticated', () => {
         console.log('Client is authenticated!');
         status = 'CONNECTING';
-        qrCodeDataUrl = null; // Clear QR code immediately
+        qrCodeDataUrl = null;
     });
 
     client.on('ready', () => {
@@ -88,11 +86,6 @@ const initializeClient = () => {
     client.on('auth_failure', msg => {
         console.error('AUTHENTICATION FAILURE', msg);
         status = 'ERROR';
-        // Restart on auth failure
-        setTimeout(() => {
-             console.log("Restarting client due to auth failure...");
-             initializeClient();
-        }, 5000);
     });
     
     client.on('disconnected', async (reason) => {
@@ -100,15 +93,14 @@ const initializeClient = () => {
         status = 'INITIALIZING';
         qrCodeDataUrl = null;
         
-        // Destroy the current client to free resources
+        // On disconnect, destroy and try to re-init
         try {
             await client.destroy();
         } catch (e) {
             console.error('Error destroying client:', e);
         }
-        
-        // Re-initialize to start a new session (generate new QR)
-        initializeClient();
+        client = null;
+        initClient(mongoose); // Restart
     });
 
     try {
@@ -119,9 +111,6 @@ const initializeClient = () => {
     }
 };
 
-// Start immediately
-initializeClient();
-
 const getStatus = () => {
     return {
         status,
@@ -130,7 +119,8 @@ const getStatus = () => {
 };
 
 const sendMessage = async (number, text, mediaObj) => {
-    // Allow sending if READY or CONNECTING (Authenticated but syncing)
+    if (!client) throw new Error('Client not initialized');
+    // Allow sending if READY or CONNECTING
     if (status !== 'READY' && status !== 'CONNECTING') throw new Error('Client not ready');
 
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
@@ -157,26 +147,18 @@ const sendMessage = async (number, text, mediaObj) => {
 
 const logout = async () => {
     try {
-        if (status === 'READY' || status === 'CONNECTING') {
-            await client.logout(); // This triggers 'disconnected' event which handles re-init
-        } else {
-            // If not fully ready but we want to reset
-            try { await client.destroy(); } catch (e) {}
-            status = 'INITIALIZING';
-            initializeClient();
+        if (client) {
+            await client.logout();
         }
         return { success: true };
     } catch (error) {
         console.error('Error logging out:', error);
-        // Force reset
-        try { await client.destroy(); } catch (e) {}
-        status = 'INITIALIZING';
-        initializeClient();
         return { success: false, error: error.message };
     }
 };
 
 module.exports = {
+    initClient,
     getStatus,
     sendMessage,
     logout
