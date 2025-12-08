@@ -4,7 +4,7 @@ const qrcode = require('qrcode');
 
 let client;
 let qrCodeDataUrl = null;
-let status = 'INITIALIZING'; // INITIALIZING, QR_READY, READY, ERROR
+let status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTING, READY, ERROR
 
 // Define function to initialize client
 const initializeClient = () => {
@@ -35,6 +35,12 @@ const initializeClient = () => {
         } catch (err) {
             console.error('Error generating QR image', err);
         }
+    });
+
+    client.on('authenticated', () => {
+        console.log('Client is authenticated!');
+        status = 'CONNECTING';
+        qrCodeDataUrl = null; // Clear QR code immediately
     });
 
     client.on('ready', () => {
@@ -83,7 +89,8 @@ const getStatus = () => {
 };
 
 const sendMessage = async (number, text, mediaObj) => {
-    if (status !== 'READY') throw new Error('Client not ready');
+    // Allow sending if READY or CONNECTING (Authenticated but syncing)
+    if (status !== 'READY' && status !== 'CONNECTING') throw new Error('Client not ready');
 
     const sanitizedNumber = number.replace(/[^0-9]/g, '');
     let finalNumber = sanitizedNumber;
@@ -109,7 +116,7 @@ const sendMessage = async (number, text, mediaObj) => {
 
 const logout = async () => {
     try {
-        if (status === 'READY') {
+        if (status === 'READY' || status === 'CONNECTING') {
             await client.logout(); // This triggers 'disconnected' event which handles re-init
         } else {
             // If not fully ready but we want to reset

@@ -10,7 +10,6 @@ require('./models/User'); // Ensure User model is registered
 const User = mongoose.model('user');
 
 // Initialize WhatsApp Client (It starts itself)
-// Only require it if you want it to start immediately on server launch
 try {
     require('./whatsappClient');
 } catch (e) {
@@ -20,24 +19,35 @@ try {
 const app = express();
 
 // Init Middleware
-// Explicitly allow all origins to prevent CORS issues between Vercel and Render
 app.use(cors({
   origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Enable Pre-flight requests for all routes (Fixes Vercel CORS issues)
-// Use regex /.*/ instead of string '*' to prevent "Missing parameter name" errors
+// Enable Pre-flight requests for all routes
 app.options(/.*/, cors());
 
 // Increase payload limit for images
 app.use(express.json({ limit: '50mb', extended: true }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-app.get('/', (req, res) => res.send('API Running'));
+// --- STATIC FILE SERVING ---
+// Define the path to the React Build directory
+// server.js is in /live/backend/, so we go up one level (..) then into dashboad/build
+const buildPath = path.join(__dirname, '../dashboad/build');
 
-// Define Routes
+// Serve static files (css, js, images) from the build directory
+app.use(express.static(buildPath));
+
+app.get('/', (req, res) => {
+    // If the React app is built, serve it. Otherwise show API status.
+    res.sendFile(path.join(buildPath, 'index.html'), (err) => {
+        if (err) res.send('API Running (Frontend not found at ' + buildPath + ')');
+    });
+});
+
+// Define API Routes
 app.use('/api/spices', require('./routes/spices'));
 app.use('/api/purchases', require('./routes/purchases'));
 app.use('/api/sales', require('./routes/sales'));
@@ -46,29 +56,33 @@ app.use('/api/settings', require('./routes/settings'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/whatsapp', require('./routes/whatsapp'));
 
-// --- FRONTEND SERVING (SPA Support for Render) ---
-// Serve static files from the React build directory
-// Make sure your Render build command builds the frontend into 'live/dashboad/build'
-app.use(express.static(path.join(__dirname, '../dashboad/build')));
-
 // --- GLOBAL ERROR HANDLERS ---
-// These prevent HTML responses (like default 404s) from crashing the React JSON parser
 
-// 404 Handler for API routes ONLY
-// This allows non-API routes (like /settings) to fall through to the SPA catch-all
-app.use('/api/*', (req, res, next) => {
+// 1. API 404 Handler
+// This ensures that requests starting with /api/ that don't match a route return JSON 404
+// instead of falling through to the React App (which would try to parse JSON and crash)
+app.use('/api/*', (req, res) => {
   res.status(404).json({ msg: `API Route Not Found: ${req.originalUrl}` });
 });
 
-// The "Catch All" handler: for any request that doesn't match an API route
-// Sends the React index.html to allow client-side routing (fixes refresh 404s)
+// 2. React SPA Catch-All Handler (The Fix for "Refresh 404")
+// Any request that is NOT an API request and NOT a static file will be sent index.html.
+// This allows React Router to handle the URL (e.g., /settings, /stock) on the client side.
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../dashboad/build', 'index.html'));
+  res.sendFile(path.join(buildPath, 'index.html'), (err) => {
+    if (err) {
+      console.error("Error sending index.html:", err);
+      res.status(500).send("Server Error: Could not find frontend build files.");
+    }
+  });
 });
 
-// Global Error Handler
+// 3. Global Error Middleware
 app.use((err, req, res, next) => {
   console.error("Server Error:", err.stack);
+  if (res.headersSent) {
+      return next(err);
+  }
   res.status(500).json({ msg: "Internal Server Error" });
 });
 
@@ -87,11 +101,9 @@ const seedAdminUser = async () => {
   try {
     const userExists = await User.findOne({ username });
     if (userExists) {
-      // console.log('Admin user already exists.');
       return;
     }
 
-    // Hashing logic (same as auth.js)
     const SALT_LENGTH = 16;
     const KEY_LENGTH = 64;
     const ITERATIONS = 100000;
@@ -126,7 +138,7 @@ const seedAdminUser = async () => {
 const startServer = async () => {
   try {
     await connectDB();
-    await seedAdminUser(); // Run seed check on startup
+    await seedAdminUser();
     app.listen(PORT, () => console.log(`Server started on port ${PORT}`));
   } catch (error) {
     console.error('Failed to start server:', error);
