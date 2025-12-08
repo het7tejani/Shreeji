@@ -19,15 +19,20 @@ const initClient = (mongooseConnection) => {
     client = new Client({
         authStrategy: new RemoteAuth({
             store: store,
-            backupSyncIntervalMs: 300000 // Backup session every 5 minutes
+            backupSyncIntervalMs: 60000 // Backup session every 1 minute to save state faster
         }),
         // Increase timeouts for slow servers
         authTimeoutMs: 60000, 
-        qrMaxRetries: 5,
+        qrMaxRetries: 10,
         takeoverOnConflict: true,
+        // Cache the version to avoid fetching it every time (Stability fix)
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        },
         puppeteer: {
             headless: true,
-            // Aggressive memory saving args
+            // Aggressive memory saving args for Render Free Tier
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -52,7 +57,9 @@ const initClient = (mongooseConnection) => {
                 '--disable-print-preview',
                 '--disable-renderer-backgrounding',
                 '--disable-speech-api',
-                '--disable-sync'
+                '--disable-sync',
+                '--disable-site-isolation-trials', // Critical for low memory
+                '--disable-software-rasterizer'
             ]
         }
     });
@@ -100,7 +107,8 @@ const initClient = (mongooseConnection) => {
             console.error('Error destroying client:', e);
         }
         client = null;
-        initClient(mongoose); // Restart
+        // Don't auto-restart immediately to prevent loops if crashing
+        setTimeout(() => initClient(mongoose), 5000); 
     });
 
     try {
@@ -157,9 +165,27 @@ const logout = async () => {
     }
 };
 
+const restart = async () => {
+    try {
+        if (client) {
+            console.log("Forcing client restart...");
+            await client.destroy();
+            client = null;
+        }
+        status = 'INITIALIZING';
+        qrCodeDataUrl = null;
+        initClient(mongoose);
+        return { success: true };
+    } catch (error) {
+        console.error('Error restarting:', error);
+        return { success: false, error: error.message };
+    }
+}
+
 module.exports = {
     initClient,
     getStatus,
     sendMessage,
-    logout
+    logout,
+    restart
 };
