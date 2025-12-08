@@ -10,11 +10,16 @@ let status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTING, READY, ERROR
 const initializeClient = () => {
     console.log("Initializing WhatsApp Client...");
     
-    // Create new client instance
+    // Create new client instance with aggressive memory optimizations for Render Free Tier
     client = new Client({
         authStrategy: new LocalAuth(),
+        // Increase timeouts for slow servers
+        authTimeoutMs: 60000, // Wait 60s for auth
+        qrMaxRetries: 5,
+        takeoverOnConflict: true,
         puppeteer: {
             headless: true,
+            // These arguments strip Chrome down to the bare minimum to save RAM
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -22,7 +27,38 @@ const initializeClient = () => {
                 '--disable-accelerated-2d-canvas',
                 '--no-first-run',
                 '--no-zygote',
-                '--disable-gpu'
+                '--single-process', // Saves memory
+                '--disable-gpu',
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--mute-audio',
+                '--no-default-browser-check',
+                '--autoplay-policy=user-gesture-required',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-breakpad',
+                '--disable-client-side-phishing-detection',
+                '--disable-component-update',
+                '--disable-domain-reliability',
+                '--disable-features=AudioServiceOutOfProcess',
+                '--disable-hang-monitor',
+                '--disable-ipc-flooding-protection',
+                '--disable-notifications',
+                '--disable-offer-store-unmasked-wallet-cards',
+                '--disable-popup-blocking',
+                '--disable-print-preview',
+                '--disable-prompt-on-repost',
+                '--disable-renderer-backgrounding',
+                '--disable-speech-api',
+                '--disable-sync',
+                '--hide-scrollbars',
+                '--ignore-gpu-blacklist',
+                '--metrics-recording-only',
+                '--no-pings',
+                '--password-store=basic',
+                '--use-gl=swiftshader',
+                '--use-mock-keychain',
             ]
         }
     });
@@ -52,6 +88,11 @@ const initializeClient = () => {
     client.on('auth_failure', msg => {
         console.error('AUTHENTICATION FAILURE', msg);
         status = 'ERROR';
+        // Restart on auth failure
+        setTimeout(() => {
+             console.log("Restarting client due to auth failure...");
+             initializeClient();
+        }, 5000);
     });
     
     client.on('disconnected', async (reason) => {
