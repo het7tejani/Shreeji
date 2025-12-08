@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const connectDB = require('./db');
@@ -7,11 +8,31 @@ const crypto = require('crypto');
 require('./models/User'); // Ensure User model is registered
 const User = mongoose.model('user');
 
+// Initialize WhatsApp Client (It starts itself)
+// Only require it if you want it to start immediately on server launch
+try {
+    require('./whatsappClient');
+} catch (e) {
+    console.error("Failed to load WhatsApp Client:", e.message);
+}
+
 const app = express();
 
 // Init Middleware
-app.use(cors());
-app.use(express.json({ extended: false }));
+// Explicitly allow all origins to prevent CORS issues between Vercel and Render
+app.use(cors({
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Enable Pre-flight requests for all routes (Fixes Vercel CORS issues)
+// Use regex /.*/ instead of string '*' to prevent "Missing parameter name" errors
+app.options(/.*/, cors());
+
+// Increase payload limit for images
+app.use(express.json({ limit: '50mb', extended: true }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.get('/', (req, res) => res.send('API Running'));
 
@@ -22,7 +43,21 @@ app.use('/api/sales', require('./routes/sales'));
 app.use('/api/customers', require('./routes/customers'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/whatsapp', require('./routes/whatsapp'));
 
+// --- GLOBAL ERROR HANDLERS ---
+// These prevent HTML responses (like default 404s) from crashing the React JSON parser
+
+// 404 Handler for API routes
+app.use((req, res, next) => {
+  res.status(404).json({ msg: `API Route Not Found: ${req.originalUrl}` });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error("Server Error:", err.stack);
+  res.status(500).json({ msg: "Internal Server Error" });
+});
 
 const PORT = process.env.PORT || 5001;
 

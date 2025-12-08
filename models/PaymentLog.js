@@ -25,7 +25,7 @@ const PaymentLogSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['Retail', 'Wholesale', 'Retail - Whole'],
+    enum: ['Retail', 'રીટેઈલ', 'Wholesale', 'Retail - Whole'],
     default: 'Retail'
   }
 });

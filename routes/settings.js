@@ -207,7 +207,6 @@ router.get('/revenue', async (req, res) => {
             end.setHours(23,59,59,999);
         } else {
             // All Time (Default View)
-            // If Financial Year was reset, 'All Time' means 'Since Reset' for Revenue
             if (fyStart) {
                 start = fyStart;
             } else {
@@ -218,9 +217,6 @@ router.get('/revenue', async (req, res) => {
         }
 
         // --- FORCE RESET DATE ---
-        // If a manual reset has been triggered (fyStart exists), ensure the start date
-        // for calculation is not BEFORE that reset date, regardless of the period selected.
-        // This fixes the issue where 'fiscal_year' would include data from before the reset.
         if (fyStart && start < fyStart) {
             start = fyStart;
         }
@@ -228,15 +224,12 @@ router.get('/revenue', async (req, res) => {
         const dateFilter = { date: { $gte: start, $lte: end } };
 
         // --- 2. Summary Metrics (Income/Expense/Profit) ---
-        // Income = Total Sales Bill Amount (Accrual Basis)
-        // This includes the full bill amount even if borrowing exists
         const incomeAgg = await Sale.aggregate([
             { $match: { ...dateFilter, cancelled: { $ne: true } } },
             { $group: { _id: null, total: { $sum: "$finalTotal" } } }
         ]);
         const income = incomeAgg[0]?.total || 0;
 
-        // Expense = Purchases in this period
         const expenseAgg = await Purchase.aggregate([
             { $match: { ...dateFilter, cancelled: { $ne: true } } },
             { $group: { _id: null, total: { $sum: "$grandTotal" } } }
@@ -244,7 +237,6 @@ router.get('/revenue', async (req, res) => {
         const expense = expenseAgg[0]?.total || 0;
 
         // --- 3. Revenue Sources (Retail vs Wholesale vs Whole Chili) ---
-        // Use Sale model for breakdown to match the Income Total
         const revenueSourceAgg = await Sale.aggregate([
             { $match: { ...dateFilter, cancelled: { $ne: true } } },
             { $group: { _id: "$type", total: { $sum: "$finalTotal" } } }
@@ -260,7 +252,7 @@ router.get('/revenue', async (req, res) => {
             } else if (r._id === 'Retail - Whole') {
                 wholeChiliRevenue += r.total;
             } else {
-                retailRevenue += r.total; // 'Retail' or legacy nulls
+                retailRevenue += r.total; 
             }
         });
         
@@ -270,8 +262,7 @@ router.get('/revenue', async (req, res) => {
             { name: 'Whole Chili', value: wholeChiliRevenue }
         ];
 
-        // --- 4. Trends (Sales Weight by Spice) ---
-        // Use daily grouping for periods <= 31 days, monthly for longer
+        // --- 4. Trends ---
         const daysDiff = (end - start) / (1000 * 60 * 60 * 24);
         const dateFormat = daysDiff > 32 ? "%Y-%m" : "%Y-%m-%d";
 
@@ -306,37 +297,19 @@ router.get('/revenue', async (req, res) => {
         const trends = Object.values(trendMap).sort((a,b) => a.date.localeCompare(b.date));
         const trendKeys = Array.from(trendKeysSet);
 
-        // --- 5. Assets Valuation (Snapshot - Current State) ---
-        // IMPORTANT: Assets (Dues) are NOT affected by dateFilter (reset).
-        // They represent the current state of debt in the market.
-        
-        // Retail
+        // --- 5. Assets Valuation (Dues from Customers) ---
         const retailDuesAgg = await Sale.aggregate([
-            { $match: { 
-                borrowing: { $gt: 0 }, 
-                type: { $nin: ['Wholesale', 'Retail - Whole'] },
-                cancelled: { $ne: true }
-            }},
+            { $match: { borrowing: { $gt: 0 }, type: { $nin: ['Wholesale', 'Retail - Whole'] }, cancelled: { $ne: true }}},
             { $group: { _id: null, total: { $sum: "$borrowing" } } }
         ]);
         
-        // Wholesale
         const wholesaleDuesAgg = await Sale.aggregate([
-            { $match: { 
-                borrowing: { $gt: 0 }, 
-                type: 'Wholesale',
-                cancelled: { $ne: true } 
-            }},
+            { $match: { borrowing: { $gt: 0 }, type: 'Wholesale', cancelled: { $ne: true }}},
             { $group: { _id: null, total: { $sum: "$borrowing" } } }
         ]);
 
-        // Whole Chili
         const wholeChiliDuesAgg = await Sale.aggregate([
-            { $match: { 
-                borrowing: { $gt: 0 }, 
-                type: 'Retail - Whole',
-                cancelled: { $ne: true } 
-            }},
+            { $match: { borrowing: { $gt: 0 }, type: 'Retail - Whole', cancelled: { $ne: true }}},
             { $group: { _id: null, total: { $sum: "$borrowing" } } }
         ]);
 
@@ -344,8 +317,15 @@ router.get('/revenue', async (req, res) => {
         const wholesaleDues = wholesaleDuesAgg[0]?.total || 0;
         const wholeChiliDues = wholeChiliDuesAgg[0]?.total || 0;
 
-        // --- 6. Product Performance ---
-        // Analyze sales in the selected period
+        // --- 6. Liabilities (Dues to Vendors/Kheduts) ---
+        // NEW FEATURE: Calculate total outstanding balance on purchases
+        const purchaseDuesAgg = await Purchase.aggregate([
+            { $match: { balance: { $gt: 0 }, cancelled: { $ne: true } } },
+            { $group: { _id: null, total: { $sum: "$balance" } } }
+        ]);
+        const vendorDues = purchaseDuesAgg[0]?.total || 0;
+
+        // --- 7. Product Performance ---
         const salesInPeriod = await Sale.aggregate([
             { $match: { ...dateFilter, cancelled: { $ne: true } } },
             { $unwind: "$items" },
@@ -366,8 +346,7 @@ router.get('/revenue', async (req, res) => {
 
         const topProducts = [...productPerformance].sort((a,b) => b.revenue - a.revenue).slice(0, 5);
 
-        // --- 7. Recent Transactions (Activity Feed) ---
-        // Recent transactions should also respect the reset if viewing 'All Time'
+        // --- 8. Recent Transactions ---
         const [recentSales, recentPurchases, recentPayments] = await Promise.all([
             Sale.find({ ...dateFilter, cancelled: { $ne: true } }).sort({date: -1}).limit(10).populate('customer', 'name').lean(),
             Purchase.find({ ...dateFilter, cancelled: { $ne: true } }).sort({date: -1}).limit(10).lean(),
@@ -411,6 +390,9 @@ router.get('/revenue', async (req, res) => {
                 wholesaleDues, 
                 wholeChiliDues,
                 totalAssets: retailDues + wholesaleDues + wholeChiliDues 
+            },
+            liabilities: {
+                vendorDues
             },
             topProducts,
             recentTransactions: transactions

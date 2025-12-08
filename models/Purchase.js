@@ -25,6 +25,14 @@ const PurchaseSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  paidAmount: {
+    type: Number,
+    default: 0
+  },
+  balance: {
+    type: Number,
+    default: 0
+  },
   cancelled: {
     type: Boolean,
     default: false
